@@ -1,0 +1,65 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "power-model"
+dynamic = ["version"]
+description = ''
+readme = "README.md"
+requires-python = ">=3.12"
+license = "MIT"
+keywords = []
+authors = [
+  { name = "Sunil Thaha", email = "sthaha@redhat.com" },
+]
+classifiers = [
+  "Development Status :: 4 - Beta",
+  "Programming Language :: Python",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: Implementation :: CPython",
+  "Programming Language :: Python :: Implementation :: PyPy",
+]
+dependencies = [
+  "click",
+	"pandas",
+	"pyyaml",
+	"scikit-learn",
+]
+
+[project.urls]
+Documentation = "https://github.com/sthaha/power-model#readme"
+Issues = "https://github.com/sthaha/power-model/issues"
+Source = "https://github.com/sthaha/power-model"
+
+[project.scripts]
+power-model = "power_model.cli:pm"
+
+[tool.hatch.version]
+path = "src/power_model/__about__.py"
+
+[tool.hatch.envs.types]
+extra-dependencies = [
+  "mypy>=1.0.0",
+]
+[tool.hatch.envs.types.scripts]
+check = "mypy --install-types --non-interactive {args:src/power_model tests}"
+
+[tool.coverage.run]
+source_pkgs = ["power_model", "tests"]
+branch = true
+parallel = true
+omit = [
+  "src/power_model/__about__.py",
+]
+
+[tool.coverage.paths]
+power_model = ["src/power_model", "*/power-model/src/power_model"]
+tests = ["tests", "*/power-model/tests"]
+
+[tool.coverage.report]
+exclude_lines = [
+  "no cov",
+  "if __name__ == .__main__.:",
+  "if TYPE_CHECKING:",
+]

@@ -1,0 +1,19 @@
+prometheus:
+  url: http://localhost:9090
+
+train:
+  path: ./tmp/train
+
+  start_at: 2024-10-01T12:44:39Z
+  end_at: 2024-10-01T13:31:53Z
+
+  features:
+    cpu_time: sum(rate(kepler_process_bpf_cpu_time_ms_total{job="vm"}[20s]))
+    cpus: 2
+
+  learn: sum(rate(kepler_vm_package_joules_total{job="metal"}[20s]))
+
+  models:
+    xgboost:
+    linear-regression:
+    polynomial-regression:
