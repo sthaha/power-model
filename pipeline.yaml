@@ -15,5 +15,5 @@ train:
 
   models:
     xgboost:
-    linear-regression:
-    polynomial-regression:
+    linear:
+    #logistic:

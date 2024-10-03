@@ -3,6 +3,6 @@
 # SPDX-License-Identifier: MIT
 
 from .loader import load_pipeline
-from .runner import run_pipeline
+from .runner import train, Predictor
 
-__all__ = ["load_pipeline", "run_pipeline"]
+__all__ = ["load_pipeline", "train", "Predictor"]

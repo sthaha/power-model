@@ -25,6 +25,11 @@ dependencies = [
 	"pandas",
 	"pyyaml",
 	"scikit-learn",
+	"matplotlib",
+	"requests",
+	"xgboost",
+  "prometheus-api-client",
+  "tabulate",
 ]
 
 [project.urls]
@@ -37,6 +42,12 @@ power-model = "power_model.cli:pm"
 
 [tool.hatch.version]
 path = "src/power_model/__about__.py"
+
+[tool.hatch.envs.default]
+extra-dependencies = [
+  "ipython",
+	"ipdb",
+]
 
 [tool.hatch.envs.types]
 extra-dependencies = [
@@ -63,3 +74,7 @@ exclude_lines = [
   "if __name__ == .__main__.:",
   "if TYPE_CHECKING:",
 ]
+
+[tool.ruff]
+line-length = 120
+
