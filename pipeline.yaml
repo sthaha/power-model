@@ -17,6 +17,8 @@ train:
 
   models:
     xgboost:
+      objective: "reg:squarederror"
+      random_state: 42
     linear:
     polynomial:
       degree: 2
