@@ -7,6 +7,7 @@ import time
 
 from power_model.__about__ import __version__
 from power_model import trainer
+from datetime import datetime, timedelta
 
 logger = logging.getLogger(__name__)
 
@@ -77,6 +78,52 @@ def run(file):
 
     # except Exception as e:
     #    click.echo(f"An error occurred: {e}")
+
+
+@pm.command()
+@click.option(
+    "-f",
+    "--file",
+    required=True,
+    help="Path to the pipeline YAML file.",
+    type=click.Path(exists=True),
+)
+@click.option(
+    "-s",
+    "--start",
+    required=False,
+    help="Path to the pipeline YAML file.",
+    type=click.DateTime(),
+    default=None,
+)
+@click.option(
+    "-e",
+    "--end",
+    required=False,
+    type=click.DateTime(),
+    default=datetime.now(),
+)
+@click.option(
+    "-d",
+    "--duration",
+    required=False,
+    type=int,
+    default=5 * 60,
+)
+def compute_error(file, start: datetime, end: datetime, duration: int):
+    """Run models based on the provided pipeline configuration and compare the prediction against learning."""
+
+    if start is None:
+        if duration == 0:
+            raise click.ClickException("Please provide start or non-zero duration")
+
+        start = end - timedelta(seconds=duration)
+
+    pipeline = trainer.load_pipeline(file)
+    predictor = trainer.Predictor(pipeline)
+
+    click.secho(f"Predicting from {start} to {end}")
+    predictor.predict_range(start, end)
 
 
 if __name__ == "__main__":

@@ -1,13 +1,19 @@
 from typing import NamedTuple
+from sklearn.preprocessing import PolynomialFeatures
 from tabulate import tabulate
 import pandas as pd
 import json
 import pathlib
 import os
 from datetime import datetime, timedelta
+
+from sklearn.pipeline import make_pipeline
 from sklearn.linear_model import LinearRegression, LogisticRegression
 from xgboost import XGBRegressor
-from sklearn.metrics import mean_absolute_error, mean_squared_error
+
+from sklearn.model_selection import train_test_split
+from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
+
 import typing
 import logging
 
@@ -23,12 +29,6 @@ import ipdb
 logger = logging.getLogger(__name__)
 
 
-def query_prometheus(prometheus_url, query, start_time, end_time):
-    client = prometheus.Client(prometheus_url)
-    # Execute the range query using the Client class and return the resulting DataFrame.
-    return client.range_query(start=start_time, end=end_time, step="20s", **queries)
-
-
 def save_to_json(data, path):
     with open(path, "w") as json_file:
         json.dump(data, json_file)
@@ -38,33 +38,29 @@ class ErrorMetrics(NamedTuple):
     mae: float
     mse: float
     mape: float
+    r2: float
 
 
 def calculate_metrics(y_true, y_pred) -> ErrorMetrics:
     mae = mean_absolute_error(y_true, y_pred)
     mse = mean_squared_error(y_true, y_pred)
+    r2 = 0.0
+    if len(y_true) > 5:
+        r2 = r2_score(y_true, y_pred)
+
     mape = np.mean(np.abs((y_true - y_pred) / y_true)) * 100  # MAPE calculation
-    return ErrorMetrics(mae, mse, mape)
-
-
-def xgboost_model(X, y) -> tuple[XGBRegressor, ErrorMetrics]:
-    xgb_model = XGBRegressor()
-    xgb_model.fit(X, y)
-    y_pred = xgb_model.predict(X)
-    metrics = calculate_metrics(y, y_pred)
-
-    # Save model with Joblib
-
-    return xgb_model, metrics
+    return ErrorMetrics(mae, mse, mape, r2)
 
 
 Regressor = typing.TypeVar("Regressor")
 
 
 def train_one(name: str, model: Regressor, X, y, model_path: pathlib.Path) -> tuple[Regressor, ErrorMetrics]:
-    model.fit(X, y)
-    y_pred = model.predict(X)
-    metrics = calculate_metrics(y, y_pred)
+    X_train, X_val, y_train, y_val = train_test_split(X, y, test_size=0.2, random_state=42)
+
+    model.fit(X_train, y_train)
+    y_pred = model.predict(X_val)
+    metrics = calculate_metrics(y_val, y_pred)
 
     # Save model with Joblib
     joblib.dump(model, os.path.join(model_path, f"{name}_model.joblib"))
@@ -79,6 +75,10 @@ def regressor_for_model_name(name: str, params: dict[str, typing.Any]) -> typing
         return XGBRegressor(**params)
     if name == "linear":
         return LinearRegression(**params)
+    if name == "polynomial":
+        poly = PolynomialFeatures(**params)
+        return make_pipeline(poly, LinearRegression())
+
     if name == "logistic":
         return LogisticRegression(**params)
 
@@ -120,6 +120,8 @@ def train(config):
     X = df[features.keys()].values
     y = df["learn"].values  # Adjust based on actual structure
 
+    df.info()
+
     # save df
     model_base_path = pathlib.Path(config["train"]["path"])
     os.makedirs(model_base_path, exist_ok=True)
@@ -133,10 +135,10 @@ def train(config):
     # Prepare data for tabulation
     table_data = []
     for model, metrics in metrics.items():
-        table_data.append([model, metrics.mape, metrics.mae, metrics.mse])
+        table_data.append([model, metrics.mape, metrics.mae, metrics.mse, metrics.r2])
 
     # Print the table
-    print(tabulate(table_data, headers=["Name", "MAPE", "MAE", "MSE"], tablefmt="tabulate"))
+    print(tabulate(table_data, headers=["Name", "MAPE", "MAE", "MSE", "R2"], tablefmt="tabulate"))
 
 
 class Predictor:
@@ -151,11 +153,34 @@ class Predictor:
 
         self.prom = prometheus.Client(pipeline["prometheus"]["url"])
 
-    def predict(self):
-        now = datetime.now()
+    def predict_range(self, start, end, step="1s"):
+        df_features = self.prom.range_query(start=start, end=end, step=step, **self.features)
+        df_y = self.prom.range_query(start=start, end=end, step=step, target=self.target)
 
-        df_features = self.prom.instant_query(at=now, **self.features)
-        df_y = self.prom.instant_query(at=now, target=self.target)
+        X = df_features[self.features.keys()].values
+        y = df_y["target"].values
+
+        summary = []
+
+        for name, model in self.models.items():
+            y_pred = model.predict(X)
+            metrics = calculate_metrics(y, y_pred)
+            summary.append([name, metrics.mape, metrics.mae, metrics.mse, metrics.r2])
+
+        print(
+            tabulate(
+                summary,
+                headers=["Name", "MAPE", "MAE", "MSE", "R2"],
+                tablefmt="tabulate",
+            )
+        )
+
+    def predict(self, at=None):
+        if at is None:
+            at = datetime.now()
+
+        df_features = self.prom.instant_query(at=at, **self.features)
+        df_y = self.prom.instant_query(at=at, target=self.target)
 
         X = df_features[self.features.keys()].values
         y = df_y["target"].values
@@ -164,18 +189,20 @@ class Predictor:
 
         for name, model in self.models.items():
             y_pred = model.predict(X)
-            metrics = calculate_metrics(y, y_pred)
             row = [name]
-            row = np.append(row, X)
-            row = np.append(row, y)
-            row = np.append(row, y_pred)
-            row = np.append(row, [metrics.mape, metrics.mae, metrics.mse])
+            row = np.append(row, X[0])
+            row = np.append(row, y[0])
+            row = np.append(row, y_pred[0])
+            diff = y - y_pred
+
+            percent_error = np.round(abs(diff / y) * 100, 2)
+            row = np.append(row, [np.round(diff, 2), percent_error])
             table.append(row.tolist())
 
         print(
             tabulate(
                 table,
-                headers=["Name", *self.features.keys(), "Target", "Predicted", "MAPE", "MAE", "MSE"],
+                headers=["Name", *self.features.keys(), "Target", "Predicted", "Diff", "Err %"],
                 tablefmt="tabulate",
             )
         )
