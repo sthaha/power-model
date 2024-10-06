@@ -52,6 +52,10 @@ def train(file):
 
     except Exception as e:
         click.echo(f"An error occurred: {e}")
+        # print stack
+        import traceback
+
+        traceback.print_exc()
 
 
 @pm.command()

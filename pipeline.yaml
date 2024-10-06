@@ -6,15 +6,27 @@ train:
 
   start_at: 2024-10-04T07:25:00Z
   end_at: 2024-10-04T07:35:00Z
+  step: 1s
 
-  features:
-    # cpu_time: sum(rate(kepler_process_bpf_cpu_time_ms_total{job="vm"}[20s]))
-    node_cpu_time: sum( rate(node_cpu_seconds_total{job="vm-node-exporter", mode=~"user"}[20s])) * 1000
-    #page_cache_hits: sum(rate(kepler_process_bpf_page_cache_hit_total{job="vm"}[5s]))
-    cpus: 2
 
-  learn: sum(rate(kepler_vm_package_joules_total{job="metal"}[20s]))
+  groups:
+    - name: node-cpu
+      features:
+        node_cpu_time: |
+          sum( 
+            rate(node_cpu_seconds_total{job="vm-node-exporter", mode=~"user"}[10s])
+          ) * 1000
+        cpus: 2
 
+    - name: kepler-cpu
+      features:
+        cpu_time: sum(rate(kepler_process_bpf_cpu_time_ms_total{job="vm"}[10s]))
+        page_cache_hits: sum(rate(kepler_process_bpf_page_cache_hit_total{job="vm"}[10s]))
+        cpus: 2
+
+  target: sum(rate(kepler_vm_package_joules_total{job="metal"}[10s]))
+
+  # for each group create  
   models:
     xgboost:
       objective: "reg:squarederror"

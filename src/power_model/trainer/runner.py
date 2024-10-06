@@ -48,6 +48,8 @@ def calculate_metrics(y_true, y_pred) -> ErrorMetrics:
     if len(y_true) > 5:
         r2 = r2_score(y_true, y_pred)
 
+    assert type(r2) is float
+
     mape = np.mean(np.abs((y_true - y_pred) / y_true)) * 100  # MAPE calculation
     return ErrorMetrics(mae, mse, mape, r2)
 
@@ -101,71 +103,98 @@ def train_models(X, y, models: dict[str, typing.Any], base_dir: pathlib.Path):
     return trained_models, metrics
 
 
-def train(config):
-    prometheus_url = config["prometheus"]["url"]
-
-    start_at: datetime = config["train"]["start_at"]
-    end_at: datetime = config["train"]["end_at"]
-
-    features = config["train"]["features"]
-    learn_query = config["train"]["learn"]
-
-    prom = prometheus.Client(prometheus_url)
-    df_features = prom.range_query(start=start_at, end=end_at, **features)
-    df_learn = prom.range_query(start=start_at, end=end_at, learn=learn_query)
-
-    df = pd.merge(df_features, df_learn, on="timestamp")
-
+def create_model_for_feature(
+    name: str,
+    features: list[str],
+    df: pd.DataFrame,
+    train_path: pathlib.Path,
+    models: dict[str, typing.Any],
+):
     # Prepare training data (X and y)
-    X = df[features.keys()].values
-    y = df["learn"].values  # Adjust based on actual structure
+    X = df[features].values
+    y = df["target"].values
 
-    df.info()
-
-    # save df
-    model_base_path = pathlib.Path(config["train"]["path"])
+    model_base_path = train_path / name
     os.makedirs(model_base_path, exist_ok=True)
-    df.to_csv(model_base_path / "training_input.csv")
+    df.to_csv(model_base_path / "training_inputs.csv")
 
-    # Train models specified in the config
-    trained_models, metrics = train_models(X, y, config["train"]["models"], model_base_path)
+    trained_models, metrics = train_models(X, y, models, model_base_path)
     # Save results to JSON file
-    save_to_json({m: metrics[m]._asdict() for m in metrics.keys()}, model_base_path / "model_error.json")
+    save_to_json({m: metrics[m]._asdict() for m in metrics.keys()}, model_base_path / "model_errors.json")
 
-    # Prepare data for tabulation
     table_data = []
     for model, metrics in metrics.items():
         table_data.append([model, metrics.mape, metrics.mae, metrics.mse, metrics.r2])
 
     # Print the table
+    print(f"              {name}")
+    print("----------------------------------")
     print(tabulate(table_data, headers=["Name", "MAPE", "MAE", "MSE", "R2"], tablefmt="tabulate"))
+
+
+def train(config):
+    prometheus_url = config["prometheus"]["url"]
+    prom = prometheus.Client(prometheus_url)
+
+    start_at: datetime = config["train"]["start_at"]
+    end_at: datetime = config["train"]["end_at"]
+    step = config["train"]["step"]
+
+    target_query = config["train"]["target"]
+
+    df_target = prom.range_query(start=start_at, end=end_at, step=step, target=target_query)
+
+    groups = config["train"]["groups"]
+    train_path = pathlib.Path(config["train"]["path"])
+
+    for group in groups:
+        name = group["name"]
+        features = group["features"]
+        df_features = prom.range_query(start=start_at, end=end_at, step=step, **features)
+        df = pd.merge(df_features, df_target, on="timestamp")
+        df.info()
+        create_model_for_feature(name, features.keys(), df, train_path, config["train"]["models"])
 
 
 class Predictor:
     def __init__(self, pipeline):
         self.pipeline = pipeline
-        model_path = pathlib.Path(pipeline["train"]["path"]) / "models"
-        models = pipeline["train"]["models"]
-        self.models = {m: joblib.load(os.path.join(model_path, f"{m}_model.joblib")) for m in models}
-
-        self.features = pipeline["train"]["features"]
-        self.target = pipeline["train"]["learn"]
 
         self.prom = prometheus.Client(pipeline["prometheus"]["url"])
+        train = pipeline["train"]
+        model_path = pathlib.Path(train["path"])
 
-    def predict_range(self, start, end, step="1s"):
-        df_features = self.prom.range_query(start=start, end=end, step=step, **self.features)
-        df_y = self.prom.range_query(start=start, end=end, step=step, target=self.target)
+        self.groups = train["groups"]
+        group_names = [g["name"] for g in self.groups]
 
-        X = df_features[self.features.keys()].values
-        y = df_y["target"].values
+        models = train["models"]
+        self.models = {
+            name: {m: joblib.load(model_path / name / "models" / f"{m}_model.joblib") for m in models}
+            for name in group_names
+        }
+
+        self.target = train["target"]
+        self.step = train["step"]
+
+    def predict_range(self, start, end, step=None):
+        step = step or self.step
 
         summary = []
+        for group in self.groups:
+            group_name = group["name"]
+            features = group["features"]
 
-        for name, model in self.models.items():
-            y_pred = model.predict(X)
-            metrics = calculate_metrics(y, y_pred)
-            summary.append([name, metrics.mape, metrics.mae, metrics.mse, metrics.r2])
+            df_features = self.prom.range_query(start=start, end=end, step=step, **features)
+            df_y = self.prom.range_query(start=start, end=end, step=step, target=self.target)
+
+            X = df_features[features.keys()].values
+            y = df_y["target"].values
+
+            for model_name, model in self.models[group_name].items():
+                y_pred = model.predict(X)
+                metrics = calculate_metrics(y, y_pred)
+                summary.append([group_name, model_name, metrics.mape, metrics.mae, metrics.mse, metrics.r2])
+            summary.append([])
 
         print(
             tabulate(
@@ -179,33 +208,39 @@ class Predictor:
         if at is None:
             at = datetime.now()
 
-        df_features = self.prom.instant_query(at=at, **self.features)
         df_y = self.prom.instant_query(at=at, target=self.target)
-
-        X = df_features[self.features.keys()].values
         y = df_y["target"].values
 
-        table = []
+        for group in self.groups:
+            group_name = group["name"]
+            features = group["features"]
+            df_features = self.prom.instant_query(at=at, **features)
+            X = df_features[features.keys()].values
 
-        for name, model in self.models.items():
-            y_pred = model.predict(X)
-            row = [name]
-            row = np.append(row, X[0])
-            row = np.append(row, y[0])
-            row = np.append(row, y_pred[0])
-            diff = y - y_pred
+            table = []
 
-            percent_error = np.round(abs(diff / y) * 100, 2)
-            row = np.append(row, [np.round(diff, 2), percent_error])
-            table.append(row.tolist())
+            for model_name, model in self.models[group_name].items():
+                y_pred = model.predict(X)
+                diff = y - y_pred
+                percent_error = np.round(abs(diff / y) * 100, 2)
 
-        print(
-            tabulate(
-                table,
-                headers=["Name", *self.features.keys(), "Target", "Predicted", "Diff", "Err %"],
-                tablefmt="tabulate",
+                row = [group_name, model_name]
+                row = np.append(row, X[0])
+                row = np.append(row, y[0])
+                row = np.append(row, y_pred[0])
+
+                diff = y - y_pred
+                percent_error = np.round(abs(diff / y) * 100, 2)
+                row = np.append(row, [np.round(diff, 2), percent_error])
+                table.append(row.tolist())
+
+            print(
+                tabulate(
+                    table,
+                    headers=["Group", "Name", *features.keys(), "Target", "Predicted", "Diff", "Err %"],
+                    tablefmt="tabulate",
+                )
             )
-        )
 
 
 def create_predictor(pipeline) -> Predictor:
